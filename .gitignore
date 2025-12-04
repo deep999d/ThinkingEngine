@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# Environment variables
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Output files
+output/
+*.md.bak
+*.json.bak
+
+# Note: data/ directory is NOT ignored - it should be committed to GitHub
+# to store curated articles and reports
+
+# OS
+.DS_Store
+Thumbs.db
+

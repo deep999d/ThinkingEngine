@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: thinking-engine-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python run_api.py
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false 
+      - key: OPENAI_MODEL
+        value: gpt-4o
+        sync: false
+      - key: MAX_CHARS_PER_DOCUMENT
+        value: "12000"
+        sync: false
+      - key: MAX_TOTAL_CONTEXT_CHARS
+        value: "50000"
+        sync: false
+    healthCheckPath: /health
+
