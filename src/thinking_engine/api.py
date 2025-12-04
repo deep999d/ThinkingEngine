@@ -64,20 +64,10 @@ class CORSHeaderMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(CORSHeaderMiddleware)
 
-# Add explicit OPTIONS handler for CORS preflight
-@app.options("/{full_path:path}")
-async def options_handler(full_path: str):
-    """Handle CORS preflight requests."""
-    return Response(
-        content="",
-        status_code=200,
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, OPTIONS, HEAD",
-            "Access-Control-Allow-Headers": "*",
-            "Access-Control-Max-Age": "3600",
-        }
-    )
+# Note: FastAPI's CORSMiddleware automatically handles OPTIONS requests
+# We don't need explicit OPTIONS handlers - they cause issues with CustomGPT schema import
+# The catch-all OPTIONS handler was removed because CustomGPT doesn't recognize it
+# CORS is fully handled by CORSMiddleware and CORSHeaderMiddleware above
 
 
 # Request/Response Models
