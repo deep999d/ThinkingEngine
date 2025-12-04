@@ -180,18 +180,33 @@ def _get_llm() -> LLMOrchestrator:
 @app.get("/", tags=["Info"])
 async def root():
     """API root endpoint."""
-    return {
-        "name": "Thinking Engine API",
-        "version": "0.1.0",
-        "description": "AI Content Thinking Engine - Generate blog posts and tweets from curated research",
-        "endpoints": {
-            "list_weeks": "/api/weeks",
-            "get_week_documents": "/api/weeks/{week_folder}/documents",
-            "generate_blog": "/api/generate/blog",
-            "generate_tweets": "/api/generate/tweets",
-            "generate_all": "/api/generate/all"
+    return JSONResponse(
+        content={
+            "name": "Thinking Engine API",
+            "version": "0.1.0",
+            "description": "AI Content Thinking Engine - Generate blog posts and tweets from curated research",
+            "status": "online",
+            "endpoints": {
+                "list_weeks": "/api/weeks",
+                "get_week_documents": "/api/weeks/{week_folder}/documents",
+                "generate_blog": "/api/generate/blog",
+                "generate_tweets": "/api/generate/tweets",
+                "generate_all": "/api/generate/all"
+            }
         }
-    }
+    )
+
+
+@app.get("/test", tags=["Info"])
+async def test_endpoint():
+    """Simple test endpoint to verify API is accessible."""
+    return JSONResponse(
+        content={
+            "status": "ok",
+            "message": "API is accessible",
+            "timestamp": "2025-01-15"
+        }
+    )
 
 
 @app.get("/health", tags=["Health"])
