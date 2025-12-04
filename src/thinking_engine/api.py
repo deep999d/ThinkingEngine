@@ -16,10 +16,27 @@ from .tweet_generator import TweetGenerator
 
 load_dotenv()
 
+# Get base URL from environment variable
+# This is required for CustomGPT to know where to make API calls
+# Set this in Render environment variables to your actual Render URL
+# Example: https://your-app-name.onrender.com
+BASE_URL = os.getenv("API_BASE_URL", "")
+
+# Build servers list for OpenAPI schema
+# CustomGPT requires the 'servers' field to be present
+servers = []
+if BASE_URL:
+    servers.append({"url": BASE_URL, "description": "Production server"})
+else:
+    # If not set, add a placeholder that users should replace
+    # This ensures OpenAPI schema is valid even if URL not configured
+    servers.append({"url": "https://your-app-name.onrender.com", "description": "Set API_BASE_URL environment variable"})
+
 app = FastAPI(
     title="Thinking Engine API",
     description="AI Content Thinking Engine - Generate blog posts and tweets from curated research",
-    version="0.1.0"
+    version="0.1.0",
+    servers=servers
 )
 
 # Enable CORS for CustomGPT integration
