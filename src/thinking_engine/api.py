@@ -1,73 +1,41 @@
-"""REST API server for Thinking Engine - CustomGPT integration."""
+"""REST API for Thinking Engine."""
 
+import json
 import os
 from pathlib import Path
 from typing import List, Optional, Dict, Any
-from fastapi import FastAPI, HTTPException, status, Request
-from fastapi.responses import JSONResponse, FileResponse, Response
+
+from fastapi import FastAPI, HTTPException, status
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+from openai import RateLimitError, APIError
 
-from .document_loaders import DocumentLoader, Document
+from .document_loaders import DocumentLoader
 from .llm_orchestrator import LLMOrchestrator
 from .blog_generator import BlogGenerator
 from .tweet_generator import TweetGenerator
 
 load_dotenv()
 
-# Get base URL from environment variable
-# This is required for CustomGPT to know where to make API calls
-# Set this in Render environment variables to your actual Render URL
-# Example: https://your-app-name.onrender.com
 BASE_URL = os.getenv("API_BASE_URL", "")
-
-# Build servers list for OpenAPI schema
-# CustomGPT requires the 'servers' field to be present
-servers = []
-if BASE_URL:
-    servers.append({"url": BASE_URL, "description": "Production server"})
-else:
-    # If not set, add a placeholder that users should replace
-    # This ensures OpenAPI schema is valid even if URL not configured
-    servers.append({"url": "https://your-app-name.onrender.com", "description": "Set API_BASE_URL environment variable"})
+servers = [{"url": BASE_URL}] if BASE_URL else []
 
 app = FastAPI(
     title="Thinking Engine API",
-    description="AI Content Thinking Engine - Generate blog posts and tweets from curated research",
+    description="Generate blog posts and tweets from curated research",
     version="0.1.0",
-    servers=servers
+    servers=servers if servers else None
 )
 
-# Enable CORS for CustomGPT integration
-# CustomGPT requires explicit CORS headers
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for CustomGPT
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS", "HEAD"],  # Explicitly allow these methods
-    allow_headers=["*"],  # Allow all headers
-    expose_headers=["*"],  # Expose all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-
-# Middleware to add CORS headers to all responses
-class CORSHeaderMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        response = await call_next(request)
-        # Add CORS headers to all responses
-        response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, HEAD"
-        response.headers["Access-Control-Allow-Headers"] = "*"
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-        return response
-
-app.add_middleware(CORSHeaderMiddleware)
-
-# Note: FastAPI's CORSMiddleware automatically handles OPTIONS requests
-# We don't need explicit OPTIONS handlers - they cause issues with CustomGPT schema import
-# The catch-all OPTIONS handler was removed because CustomGPT doesn't recognize it
-# CORS is fully handled by CORSMiddleware and CORSHeaderMiddleware above
 
 
 # Request/Response Models
@@ -90,8 +58,8 @@ class WeekDocumentsResponse(BaseModel):
 
 
 class GenerateBlogRequest(BaseModel):
-    week_folder: str = Field(..., description="Week folder name (e.g., 'week-2025-01-15')")
-    return_content: bool = Field(True, description="Whether to return the blog post content in response")
+    week_folder: str
+    return_content: bool = True
 
 
 class GenerateBlogResponse(BaseModel):
@@ -106,9 +74,9 @@ class GenerateBlogResponse(BaseModel):
 
 
 class GenerateTweetsRequest(BaseModel):
-    week_folder: str = Field(..., description="Week folder name (e.g., 'week-2025-01-15')")
-    count: int = Field(25, ge=1, le=100, description="Number of tweet ideas to generate")
-    return_content: bool = Field(True, description="Whether to return tweet content in response")
+    week_folder: str
+    count: int = Field(25, ge=1, le=100)
+    return_content: bool = True
 
 
 class TweetIdea(BaseModel):
@@ -130,9 +98,9 @@ class GenerateTweetsResponse(BaseModel):
 
 
 class GenerateAllRequest(BaseModel):
-    week_folder: str = Field(..., description="Week folder name (e.g., 'week-2025-01-15')")
-    tweet_count: int = Field(25, ge=1, le=100, description="Number of tweet ideas to generate")
-    return_content: bool = Field(True, description="Whether to return content in response")
+    week_folder: str
+    tweet_count: int = Field(25, ge=1, le=100)
+    return_content: bool = True
 
 
 class GenerateAllResponse(BaseModel):
@@ -143,137 +111,92 @@ class GenerateAllResponse(BaseModel):
     message: str
 
 
-class ErrorResponse(BaseModel):
-    success: bool
-    error: str
-    detail: Optional[str] = None
-
-
-# Helper functions
 def _get_loader() -> DocumentLoader:
-    """Get DocumentLoader instance."""
     return DocumentLoader()
 
 
 def _get_llm() -> LLMOrchestrator:
-    """Get LLMOrchestrator instance."""
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
+    if not os.getenv("OPENAI_API_KEY"):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="OPENAI_API_KEY not set in environment"
+            detail="OPENAI_API_KEY not set"
         )
     return LLMOrchestrator()
 
 
-# API Endpoints
-@app.get("/", tags=["Info"])
-async def root():
-    """API root endpoint."""
-    return JSONResponse(
-        content={
-            "name": "Thinking Engine API",
-            "version": "0.1.0",
-            "description": "AI Content Thinking Engine - Generate blog posts and tweets from curated research",
-            "status": "online",
-            "endpoints": {
-                "list_weeks": "/api/weeks",
-                "get_week_documents": "/api/weeks/{week_folder}/documents",
-                "generate_blog": "/api/generate/blog",
-                "generate_tweets": "/api/generate/tweets",
-                "generate_all": "/api/generate/all"
+def _handle_openai_error(e: Exception) -> HTTPException:
+    """Handle OpenAI API errors with appropriate status codes."""
+    if isinstance(e, RateLimitError) or "insufficient_quota" in str(e).lower() or "429" in str(e):
+        return HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "error": "OpenAI API quota limit reached",
+                "message": "Add credits at https://platform.openai.com/account/billing",
+                "error_code": "insufficient_quota"
             }
-        }
+        )
+    return HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail={"error": "OpenAI API error", "message": str(e)}
     )
 
 
-@app.get("/test", tags=["Info"])
-async def test_endpoint():
-    """Simple test endpoint to verify API is accessible."""
-    return JSONResponse(
-        content={
-            "status": "ok",
-            "message": "API is accessible",
-            "timestamp": "2025-01-15"
+@app.get("/")
+async def root():
+    return {
+        "name": "Thinking Engine API",
+        "version": "0.1.0",
+        "endpoints": {
+            "weeks": "/api/weeks",
+            "documents": "/api/weeks/{week_folder}/documents",
+            "generate_blog": "/api/generate/blog",
+            "generate_tweets": "/api/generate/tweets",
+            "generate_all": "/api/generate/all"
         }
-    )
+    }
 
 
-@app.get("/health", tags=["Health"])
+@app.get("/health")
 async def health_check():
-    """Health check endpoint for deployment monitoring."""
-    try:
-        # Quick check if data directory exists
-        data_path = Path("data")
-        has_data = data_path.exists()
-        
-        # Check if OpenAI API key is configured
-        api_key_configured = bool(os.getenv("OPENAI_API_KEY"))
-        
-        return {
-            "status": "healthy",
-            "data_directory_exists": has_data,
-            "api_key_configured": api_key_configured,
-            "version": "0.1.0"
-        }
-    except Exception as e:
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"status": "unhealthy", "error": str(e)}
-        )
+    return {
+        "status": "healthy",
+        "data_directory_exists": Path("data").exists(),
+        "api_key_configured": bool(os.getenv("OPENAI_API_KEY")),
+        "version": "0.1.0"
+    }
 
 
-@app.get("/api/weeks", response_model=WeekFolderResponse, tags=["Weeks"])
+@app.get("/api/weeks", response_model=WeekFolderResponse)
 async def list_week_folders():
-    """List all available week folders."""
-    try:
-        loader = _get_loader()
-        folders = loader.list_week_folders()
-        return WeekFolderResponse(week_folders=folders, count=len(folders))
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error listing week folders: {str(e)}"
-        )
+    loader = _get_loader()
+    folders = loader.list_week_folders()
+    return WeekFolderResponse(week_folders=folders, count=len(folders))
 
 
-@app.get("/api/weeks/{week_folder}/documents", response_model=WeekDocumentsResponse, tags=["Weeks"])
+@app.get("/api/weeks/{week_folder}/documents", response_model=WeekDocumentsResponse)
 async def get_week_documents(week_folder: str):
-    """Get documents in a specific week folder."""
-    try:
-        loader = _get_loader()
-        docs = loader.load_week_folder(week_folder)
-        
-        document_info = [
-            DocumentInfo(
-                title=doc.title,
-                source=doc.source,
-                file_path=doc.file_path,
-                file_type=doc.file_type
-            )
-            for doc in docs
-        ]
-        
-        return WeekDocumentsResponse(
-            week_folder=week_folder,
-            documents=document_info,
-            count=len(document_info)
+    loader = _get_loader()
+    docs = loader.load_week_folder(week_folder)
+    
+    document_info = [
+        DocumentInfo(
+            title=doc.title,
+            source=doc.source,
+            file_path=doc.file_path,
+            file_type=doc.file_type
         )
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e)
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error loading documents: {str(e)}"
-        )
+        for doc in docs
+    ]
+    
+    return WeekDocumentsResponse(
+        week_folder=week_folder,
+        documents=document_info,
+        count=len(document_info)
+    )
 
 
-@app.post("/api/generate/blog", response_model=GenerateBlogResponse, tags=["Generation"])
+@app.post("/api/generate/blog", response_model=GenerateBlogResponse)
 async def generate_blog(request: GenerateBlogRequest):
-    """Generate a blog post from curated documents in a week folder."""
     try:
         loader = _get_loader()
         docs = loader.load_week_folder(request.week_folder)
@@ -286,7 +209,6 @@ async def generate_blog(request: GenerateBlogRequest):
         
         llm = _get_llm()
         blog_gen = BlogGenerator(llm)
-        
         output_path = f"output/{request.week_folder}/blog-post.md"
         result = blog_gen.generate(docs, output_path)
         
@@ -308,11 +230,10 @@ async def generate_blog(request: GenerateBlogRequest):
         )
     except HTTPException:
         raise
+    except (RateLimitError, APIError) as e:
+        raise _handle_openai_error(e)
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e)
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -320,9 +241,8 @@ async def generate_blog(request: GenerateBlogRequest):
         )
 
 
-@app.post("/api/generate/tweets", response_model=GenerateTweetsResponse, tags=["Generation"])
+@app.post("/api/generate/tweets", response_model=GenerateTweetsResponse)
 async def generate_tweets(request: GenerateTweetsRequest):
-    """Generate tweet ideas from curated documents in a week folder."""
     try:
         loader = _get_loader()
         docs = loader.load_week_folder(request.week_folder)
@@ -335,13 +255,11 @@ async def generate_tweets(request: GenerateTweetsRequest):
         
         llm = _get_llm()
         tweet_gen = TweetGenerator(llm, count=request.count)
-        
         output_dir = f"output/{request.week_folder}"
         result = tweet_gen.generate(docs, output_dir)
         
         tweets = None
         if request.return_content:
-            import json
             json_file = Path(result['json_file'])
             if json_file.exists():
                 data = json.loads(json_file.read_text(encoding='utf-8'))
@@ -360,11 +278,10 @@ async def generate_tweets(request: GenerateTweetsRequest):
         )
     except HTTPException:
         raise
+    except (RateLimitError, APIError) as e:
+        raise _handle_openai_error(e)
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e)
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -372,9 +289,8 @@ async def generate_tweets(request: GenerateTweetsRequest):
         )
 
 
-@app.post("/api/generate/all", response_model=GenerateAllResponse, tags=["Generation"])
+@app.post("/api/generate/all", response_model=GenerateAllResponse)
 async def generate_all(request: GenerateAllRequest):
-    """Generate both blog post and tweet ideas for a week folder."""
     try:
         loader = _get_loader()
         docs = loader.load_week_folder(request.week_folder)
@@ -418,7 +334,6 @@ async def generate_all(request: GenerateAllRequest):
         }
         
         if request.return_content:
-            import json
             json_file = Path(tweet_result['json_file'])
             if json_file.exists():
                 data = json.loads(json_file.read_text(encoding='utf-8'))
@@ -433,11 +348,10 @@ async def generate_all(request: GenerateAllRequest):
         )
     except HTTPException:
         raise
+    except (RateLimitError, APIError) as e:
+        raise _handle_openai_error(e)
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e)
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -445,9 +359,8 @@ async def generate_all(request: GenerateAllRequest):
         )
 
 
-@app.get("/api/files/{week_folder}/blog-post", tags=["Files"])
+@app.get("/api/files/{week_folder}/blog-post")
 async def get_blog_post_file(week_folder: str):
-    """Download the generated blog post file."""
     file_path = Path(f"output/{week_folder}/blog-post.md")
     if not file_path.exists():
         raise HTTPException(
@@ -461,9 +374,8 @@ async def get_blog_post_file(week_folder: str):
     )
 
 
-@app.get("/api/files/{week_folder}/tweet-ideas", tags=["Files"])
+@app.get("/api/files/{week_folder}/tweet-ideas")
 async def get_tweet_ideas_file(week_folder: str, format: str = "json"):
-    """Download the generated tweet ideas file."""
     if format == "json":
         file_path = Path(f"output/{week_folder}/tweet-ideas.json")
         media_type = "application/json"
@@ -488,4 +400,3 @@ async def get_tweet_ideas_file(week_folder: str, format: str = "json"):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
